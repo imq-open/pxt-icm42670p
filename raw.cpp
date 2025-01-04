@@ -17,6 +17,18 @@
 
 #include "pxt.h"
 
+enum EventBusSource
+{
+	//% blockIdentity="control.eventSourceId"
+	ICM42670P_DEVICE_ID = 74,
+};
+
+enum EventBusValue
+{
+	//% blockIdentity="control.eventValueId"
+	ICM42670P_EVT_DATA_UPDATED = 1,
+};
+
 /* Driver */
 #include "inv_imu_driver.h"
 
@@ -25,6 +37,8 @@
 
 /* std */
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * This example showcases how to configure IMU to stream accel and gyro data.
@@ -47,46 +61,54 @@ namespace icm42670p
 	static volatile uint64_t int1_timestamp; /* Timestamp when INT1 is asserted */
 
 	/* Static variables for command interface */
-	static uint8_t print_si = 0;  /* Indicates if data should be printed in SI */
-	static uint8_t print_lsb = 1; /* Indicates if data should be printed in LSB */
-	static uint8_t fifo_en = 1;	  /* Indicates if data are read from FIFO (1) or registers (0) */
-	static uint8_t hires_en = 1;  /* Indicates if highres is enabled */
-	static uint8_t use_ln = 1;	  /* Indicates if power mode is low noise (1) or low power (0) */
+	// static uint8_t print_si = 0;  /* Indicates if data should be printed in SI */
+	// static uint8_t print_lsb = 1; /* Indicates if data should be printed in LSB */
+	static uint8_t fifo_en = 1;	 /* Indicates if data are read from FIFO (1) or registers (0) */
+	static uint8_t hires_en = 1; /* Indicates if highres is enabled */
+	static uint8_t use_ln = 1;	 /* Indicates if power mode is low noise (1) or low power (0) */
+
+	static volatile int accel_raw[3];
+	static volatile int gyro_raw[3];
+	static volatile int16_t temp_raw;
 
 	/* Static functions definition */
-	static int setup_mcu();
+	static int setup_imu();
 	static int configure_fifo();
 	static int configure_hires();
 	static int configure_power_mode();
 	static void int_cb(void *context, unsigned int int_num);
 	static void sensor_event_cb(inv_imu_sensor_event_t *event);
-	static int get_uart_command();
-	static int print_help();
-	static int print_current_config();
 
-	int setup_imu();
-
-	/* Main function implementation */
-	int main1(void)
+	//%
+	int main()
 	{
 		int rc = 0;
 
-		rc |= setup_mcu();
+		/* Configure GPIO to call `int_cb` when INT1 fires. */
+		rc |= si_init_gpio_int(SI_GPIO_INT1, int_cb);
 		SI_CHECK_RC(rc);
+		if (rc)
+		{
+			return rc;
+		}
 
 		INV_MSG(INV_MSG_LEVEL_INFO, "###");
 		INV_MSG(INV_MSG_LEVEL_INFO, "### Example Raw");
 		INV_MSG(INV_MSG_LEVEL_INFO, "###");
 
 		/* Reset commands interface states */
-		print_si = 1;
-		print_lsb = 0;
-		fifo_en = 1;
-		hires_en = 1;
-		use_ln = 1;
+		// print_si = 1;
+		// print_lsb = 0;
+		// fifo_en = 1;
+		// hires_en = 1;
+		// use_ln = 1;
 
 		rc |= setup_imu();
 		SI_CHECK_RC(rc);
+		if (rc)
+		{
+			return rc;
+		}
 
 		/* Reset timestamp and interrupt flag */
 		int1_flag = 0;
@@ -111,33 +133,130 @@ namespace icm42670p
 				rc = 0; /* reset `rc` (contains the number of packet read if above check is passing) */
 			}
 
-			rc |= get_uart_command();
+			si_sleep_us(1000);
+
 		} while (rc == 0);
 
 		return rc;
 	}
 
-	/* Initializes MCU peripherals. */
-	static int setup_mcu()
+	//%
+	int set_fifo_enabled(bool enabled)
 	{
 		int rc = 0;
-
-		rc |= si_board_init();
-
-		/* Configure GPIO to call `int_cb` when INT1 fires. */
-		rc |= si_init_gpio_int(SI_GPIO_INT1, int_cb);
-
-		/* Init timer peripheral for sleep and get_time */
-		rc |= si_init_timers();
-
-		/* Initialize serial interface between MCU and IMU */
-		rc |= si_io_imu_init(SERIF_TYPE);
-
+		enabled = !!enabled;
+		if (icm42670p::fifo_en != enabled)
+		{
+			icm42670p::fifo_en = enabled;
+			rc |= configure_fifo();
+			rc |= configure_hires();
+		}
 		return rc;
 	}
 
 	//%
-	int setup_imu()
+	int set_highres_enabled(bool enabled)
+	{
+		int rc = 0;
+		enabled = !!enabled;
+		if (icm42670p::hires_en != enabled)
+		{
+			icm42670p::hires_en = enabled;
+			if (!fifo_en)
+				INV_MSG(INV_MSG_LEVEL_INFO, "Warning: highres mode only apply if FIFO is enabled.");
+			rc |= configure_hires();
+		}
+		return rc;
+	}
+
+	//%
+	int set_ln_enabled(bool enabled)
+	{
+		int rc = 0;
+		enabled = !!enabled;
+		if (icm42670p::use_ln != enabled)
+		{
+			icm42670p::use_ln = enabled;
+			rc |= configure_power_mode();
+		}
+		return rc;
+	}
+
+	//%
+	Buffer get_accel_data(bool raw)
+	{
+		if (raw)
+		{
+			auto buf = pins::createBuffer(3 * sizeof(int));
+			memcpy(buf->data, (void *)icm42670p::accel_raw, buf->length);
+			return buf;
+		}
+
+		// Convert to g ---
+
+#if INV_IMU_HFSR_SUPPORTED
+		uint16_t accel_fsr_g = fifo_en && hires_en ? 32 : 4;
+#else
+		uint16_t accel_fsr_g = fifo_en && hires_en ? 16 : 4;
+#endif
+		const int max_lsb = fifo_en && hires_en ? 524287 : 32768;
+
+		auto buf = pins::createBuffer(3 * sizeof(float));
+		float *buf1 = (float *)buf->data;
+
+		int *accel_raw = (int *)icm42670p::accel_raw;
+		buf1[0] = (float)(accel_raw[0] * accel_fsr_g) / (float)max_lsb;
+		buf1[1] = (float)(accel_raw[1] * accel_fsr_g) / (float)max_lsb;
+		buf1[2] = (float)(accel_raw[2] * accel_fsr_g) / (float)max_lsb;
+
+		return buf;
+	}
+
+	//%
+	Buffer get_gyro_data(bool raw)
+	{
+		if (raw)
+		{
+			auto buf = pins::createBuffer(3 * sizeof(int));
+			memcpy(buf->data, (void *)icm42670p::gyro_raw, buf->length);
+			return buf;
+		}
+
+		// Convert to dps ---
+
+#if INV_IMU_HFSR_SUPPORTED
+		uint16_t accel_fsr_g = fifo_en && hires_en ? 32 : 4;
+		uint16_t gyro_fsr_dps = fifo_en && hires_en ? 4000 : 2000;
+#else
+		uint16_t accel_fsr_g = fifo_en && hires_en ? 16 : 4;
+		uint16_t gyro_fsr_dps = 2000;
+#endif
+		const int max_lsb = fifo_en && hires_en ? 524287 : 32768;
+
+		auto buf = pins::createBuffer(3 * sizeof(float));
+		float *buf1 = (float *)buf->data;
+
+		int *gyro_raw = (int *)icm42670p::gyro_raw;
+		buf1[0] = (float)(gyro_raw[0] * gyro_fsr_dps) / (float)max_lsb;
+		buf1[1] = (float)(gyro_raw[1] * gyro_fsr_dps) / (float)max_lsb;
+		buf1[2] = (float)(gyro_raw[2] * gyro_fsr_dps) / (float)max_lsb;
+
+		return buf;
+	}
+
+	//%
+	int get_temp_data(bool raw)
+	{
+		if (raw)
+			return icm42670p::temp_raw;
+
+		if (hires_en || !fifo_en)
+			return 25 + ((float)icm42670p::temp_raw / 128);
+		else
+			return 25 + ((float)icm42670p::temp_raw / 2);
+	}
+
+	static int setup_imu()
 	{
 		int rc = 0;
 		inv_imu_serif_t imu_serif;
@@ -272,12 +391,15 @@ namespace icm42670p
 	static void sensor_event_cb(inv_imu_sensor_event_t *event)
 	{
 		uint64_t int_timestamp = 0;
-		int accel_raw[3];
-		int gyro_raw[3];
-		char accel_str[40];
-		char gyro_str[40];
-		char temp_str[20];
-		char fifo_time_str[30];
+		// int accel_raw[3];
+		// int gyro_raw[3];
+		// char accel_str[40];
+		// char gyro_str[40];
+		// char temp_str[20];
+		// char fifo_time_str[30];
+		volatile int *accel_raw = icm42670p::accel_raw;
+		volatile int *gyro_raw = icm42670p::gyro_raw;
+		volatile int16_t *temp_raw = &icm42670p::temp_raw;
 
 		si_disable_irq();
 		int_timestamp = int1_timestamp;
@@ -305,7 +427,7 @@ namespace icm42670p
 				fifo_timestamp *= inv_imu_get_timestamp_resolution_us(&imu_dev);
 			}
 
-			snprintf(fifo_time_str, 30, "FIFO Time: %5llu us", fifo_timestamp);
+			// snprintf(fifo_time_str, 30, "FIFO Time: %5llu us", fifo_timestamp);
 
 			if (hires_en)
 			{
@@ -329,7 +451,7 @@ namespace icm42670p
 		else
 		{
 			/* No timestamp info if not using FIFO */
-			snprintf(fifo_time_str, 30, " ");
+			// snprintf(fifo_time_str, 30, " ");
 
 			accel_raw[0] = event->accel[0];
 			accel_raw[1] = event->accel[1];
@@ -345,162 +467,11 @@ namespace icm42670p
 			event->sensor_mask |= (1 << INV_SENSOR_GYRO);
 		}
 
-		if (print_si)
-		{
-			float accel_g[3];
-			float gyro_dps[3];
-			float temp_degc;
-#if INV_IMU_HFSR_SUPPORTED
-			uint16_t accel_fsr_g = fifo_en && hires_en ? 32 : 4;
-			uint16_t gyro_fsr_dps = fifo_en && hires_en ? 4000 : 2000;
-#else
-			uint16_t accel_fsr_g = fifo_en && hires_en ? 16 : 4;
-			uint16_t gyro_fsr_dps = 2000;
-#endif
-			int max_lsb = fifo_en && hires_en ? 524287 : 32768;
+		*temp_raw = event->temperature;
 
-			/* Convert raw data into scaled data in g and dps */
-			accel_g[0] = (float)(accel_raw[0] * accel_fsr_g) / (float)max_lsb;
-			accel_g[1] = (float)(accel_raw[1] * accel_fsr_g) / (float)max_lsb;
-			accel_g[2] = (float)(accel_raw[2] * accel_fsr_g) / (float)max_lsb;
-			gyro_dps[0] = (float)(gyro_raw[0] * gyro_fsr_dps) / (float)max_lsb;
-			gyro_dps[1] = (float)(gyro_raw[1] * gyro_fsr_dps) / (float)max_lsb;
-			gyro_dps[2] = (float)(gyro_raw[2] * gyro_fsr_dps) / (float)max_lsb;
-			if (hires_en || !fifo_en)
-				temp_degc = 25 + ((float)event->temperature / 128);
-			else
-				temp_degc = 25 + ((float)event->temperature / 2);
-
-			/* Generate strings and print for SI */
-			if (event->sensor_mask & (1 << INV_SENSOR_ACCEL))
-				snprintf(accel_str, 40, "Accel:% 8.2f % 8.2f % 8.2f g", accel_g[0], accel_g[1],
-						 accel_g[2]);
-			else
-				snprintf(accel_str, 40, "Accel:       -        -        -  ");
-
-			if (event->sensor_mask & (1 << INV_SENSOR_GYRO))
-				snprintf(gyro_str, 40, "Gyro:% 8.2f % 8.2f % 8.2f dps", gyro_dps[0], gyro_dps[1],
-						 gyro_dps[2]);
-			else
-				snprintf(gyro_str, 40, "Gyro:       -        -        -    ");
-
-			snprintf(temp_str, 20, "Temp: % 4.2f degC", temp_degc);
-
-			INV_MSG(INV_MSG_LEVEL_INFO, "SI  %10llu us   %s   %s   %s   %s", int_timestamp, accel_str,
-					gyro_str, temp_str, fifo_time_str);
-		}
-
-		if (print_lsb)
-		{
-			/* Generate strings and print for LSB */
-			if (event->sensor_mask & (1 << INV_SENSOR_ACCEL))
-				snprintf(accel_str, 40, "Accel:% 8d % 8d % 8d", accel_raw[0], accel_raw[1],
-						 accel_raw[2]);
-			else
-				snprintf(accel_str, 40, "Accel:       -        -        -");
-
-			if (event->sensor_mask & (1 << INV_SENSOR_GYRO))
-				snprintf(gyro_str, 40, "Gyro:% 8d % 8d % 8d", gyro_raw[0], gyro_raw[1], gyro_raw[2]);
-			else
-				snprintf(gyro_str, 40, "Gyro:       -        -        -");
-
-			snprintf(temp_str, 20, "Temp: % 6d", event->temperature);
-
-			INV_MSG(INV_MSG_LEVEL_INFO, "LSB %10llu us   %s     %s       %s        %s", int_timestamp,
-					accel_str, gyro_str, temp_str, fifo_time_str);
-		}
-	}
-
-	/* Get command from user through UART */
-	static int get_uart_command()
-	{
-		int rc = 0;
-		char cmd = 0;
-
-		switch (cmd)
-		{
-		case 's': /* Print SI */
-			print_si = !print_si;
-			INV_MSG(INV_MSG_LEVEL_INFO, "%s SI print.", print_si ? "Enabling" : "Disabling");
-			break;
-		case 'l': /* Print LSB */
-			print_lsb = !print_lsb;
-			INV_MSG(INV_MSG_LEVEL_INFO, "%s LSB print.", print_lsb ? "Enabling" : "Disabling");
-			break;
-		case 'f': /* Use FIFO or sensor register */
-			fifo_en = !fifo_en;
-			INV_MSG(INV_MSG_LEVEL_INFO, "%s FIFO.", fifo_en ? "Enabling" : "Disabling");
-			rc |= configure_fifo();
-			rc |= configure_hires();
-			break;
-		case 'i':
-			hires_en = !hires_en;
-			INV_MSG(INV_MSG_LEVEL_INFO, "%s highres mode.", hires_en ? "Enabling" : "Disabling");
-			if (!fifo_en)
-				INV_MSG(INV_MSG_LEVEL_INFO, "Warning: highres mode only apply if FIFO is enabled.");
-			rc |= configure_hires();
-			break;
-		case 'p':
-			use_ln = !use_ln;
-			INV_MSG(INV_MSG_LEVEL_INFO, "%s selected.", use_ln ? "Low-noise" : "Low-power");
-			rc |= configure_power_mode();
-			break;
-		case 'c':
-			rc |= print_current_config();
-			break;
-		case 'h':
-		case 'H':
-			rc |= print_help();
-			break;
-		case 0:
-			break; /* No command received */
-		default:
-			INV_MSG(INV_MSG_LEVEL_INFO, "Unknown command : %c", cmd);
-			rc |= print_help();
-			break;
-		}
-
-		return rc;
-	}
-
-	/* Help for UART command interface */
-	static int print_help()
-	{
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# Help");
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 's' : Toggle print data in SI");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'l' : Toggle print data in LSB");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'f' : Toggle FIFO usage");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'i' : Toggle Highres mode");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'p' : Toggle power mode (low-noise, low-power)");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'c' : Print current configuration");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# 'h' : Print this helper");
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-
-		si_sleep_us(2000000); /* Give user some time to read */
-
-		return 0;
-	}
-
-	/* Print current sample configuration */
-	static int print_current_config()
-	{
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# Current configuration");
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# FIFO: %s", fifo_en ? "Enabled" : "Disabled");
-		if (fifo_en)
-			INV_MSG(INV_MSG_LEVEL_INFO, "# Highres mode: %s", hires_en ? "Enabled" : "Disabled");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# Power mode: %s", use_ln ? "Low-noise" : "Low-power");
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# Data in SI are %s", print_si ? "printed" : "hidden");
-		INV_MSG(INV_MSG_LEVEL_INFO, "# Data in LSB are %s", print_lsb ? "printed" : "hidden");
-		INV_MSG(INV_MSG_LEVEL_INFO, "#");
-
-		si_sleep_us(2000000); /* Give user some time to read */
-
-		return 0;
+		// Raise event
+		MicroBitEvent e(ICM42670P_DEVICE_ID, ICM42670P_EVT_DATA_UPDATED, CREATE_AND_FIRE);
+		(void)e;
 	}
 
 } // namespace icm42670p

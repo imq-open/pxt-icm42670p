@@ -26,15 +26,6 @@ extern "C"
 #include "inv_imu_transport.h"
 
 	/*
-	 * Board
-	 */
-
-	/* @brief Initialize board.
-	 *  @return  0 on success, negative value on error.
-	 */
-	int si_board_init();
-
-	/*
 	 * I/O for IMU device
 	 */
 
@@ -102,30 +93,12 @@ extern "C"
 #define SI_GPIO_INT1 0
 #define SI_GPIO_INT2 1
 
-	/* @brief Initializes GPIO module to trigger callback when interrupt from IMU fires.
+	/** @brief Initializes GPIO module to trigger callback when interrupt from IMU fires.
 	 *  @param[in] int_num  Interrupt pin (`SI_GPIO_INT1` or `SI_GPIO_INT2`).
 	 *  @param[in] int_cb   Callback to be called when interrupt fires.
 	 *  @return             0 on success, negative value on error.
 	 */
 	int si_init_gpio_int(unsigned int_num, void (*int_cb)(void *context, unsigned int_num));
-
-	/* @brief Initializes GPIO module to initializes FSYNC output pin and trigger callback at
-	 *         a given frequency to allow user to toggle FSYNC pin at regular interval to emulate
-	 *         camera module.
-	 *  @param[in] freq             Frequency at which fsync_timer_cb should be called (0 if no timer is to be enabled)
-	 *  @param[in] fsync_timer_cb   Callback to be called when FSYNC timer expires.
-	 *  @return                     0 on success, negative value on error.
-	 */
-	int si_start_gpio_fsync(uint32_t freq, void (*fsync_timer_cb)(void *context));
-
-	/* @brief Stop FSYNC module.
-	 *  @return  0 on success, negative value on error.
-	 */
-	int si_stop_gpio_fsync();
-
-	/* @brief Toggles GPIO FSYNC output pin.
-	 */
-	void si_toggle_gpio_fsync();
 
 	/*
 	 * Common

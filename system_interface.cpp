@@ -25,7 +25,7 @@
 /* IMU drivers */
 #include "inv_imu_defs.h" /* For error codes */
 
-#define INV_MSG_LEVEL_TOP INV_MSG_LEVEL_MAX
+#define INV_MSG_LEVEL_TOP INV_MSG_LEVEL_OFF
 
 #include "pxt.h"
 
@@ -35,28 +35,31 @@
 #define I2C_BUFFER_TYPE char *
 #endif
 
+enum class DigitalPin
+{
+};
+
 //%
 namespace icm42670p
 {
 
-	// 7-bit slave address
-	static int slave_address;
+	static int slave_address = 0b1101000; // 7-bit slave address
+	static DigitalPin int1_pin = (DigitalPin)MICROBIT_ID_IO_P16;
+	static void (*int1_cb)(void *context, unsigned int_num);
 
 	//%
 	void set_slave_address(int addr)
 	{
-		slave_address = addr;
+		icm42670p::slave_address = addr;
+	}
+
+	//%
+	void set_int1_pin(DigitalPin pin)
+	{
+		icm42670p::int1_pin = pin;
 	}
 
 } // namespace icm42670p
-
-/*
- * Board
- */
-int si_board_init()
-{
-	return 0;
-}
 
 /*
  * I/O for IMU device
@@ -145,30 +148,34 @@ int si_stop_periodic_timer(int ch)
 	return 0;
 }
 
+static void int1_pulse_cb(MicroBitEvent e)
+{
+	if (icm42670p::int1_cb)
+		icm42670p::int1_cb((void *)0, SI_GPIO_INT1);
+}
+
 /*
  * GPIO
  */
 int si_init_gpio_int(unsigned int_num, void (*int_cb)(void *context, unsigned int_num))
 {
-	(void)int_num;
-	(void)int_cb;
-	return 0;
-}
+	if (SI_GPIO_INT1 != int_num)
+	{
+		return INV_ERROR_BAD_ARG;
+	}
 
-int si_start_gpio_fsync(uint32_t freq, void (*fsync_timer_cb)(void *context))
-{
-	(void)freq;
-	(void)fsync_timer_cb;
-	return 0;
-}
+	const int id = (int)icm42670p::int1_pin;
+	MicroBitPin *pin = pxt::getPin(id);
+	if (!pin)
+		return INV_ERROR;
 
-int si_stop_gpio_fsync()
-{
-	return 0;
-}
+	icm42670p::int1_cb = int_cb;
 
-void si_toggle_gpio_fsync()
-{
+	pin->eventOn(MICROBIT_PIN_EVENT_ON_PULSE);
+
+	pxt::uBit.messageBus.listen(id, MICROBIT_PIN_EVT_PULSE_HI, int1_pulse_cb);
+
+	return 0;
 }
 
 /*

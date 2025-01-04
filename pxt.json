@@ -1,6 +1,6 @@
 {
     "name": "pxt-icm42670p",
-    "description": "BBC Micro:bit MakeCode extension for TDK ICM-42670-P motion sensor",
+    "description": "BBC Micro:bit MakeCode extension for TDK ICM-42670-P motion sensors",
     "license": "MIT",
     "dependencies": {
         "core": "*"
