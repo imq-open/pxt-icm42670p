@@ -1,12 +1,39 @@
 {
     "name": "pxt-icm42670p",
-    "description": "",
+    "version": "1.1.0",
+    "description": "BBC Micro:bit MakeCode extension for TDK ICM-42670-P/ICM-42607-P motion sensors",
+    "license": "MIT",
     "dependencies": {
-        "core": "*",
-        "microphone": "*"
+        "core": "*"
     },
     "files": [
-        "custom.ts",
+        "icm42670p.ts",
+        "enums.d.ts",
+        "shims.d.ts",
+        "MadgwickAHRS.h",
+        "MadgwickAHRS.c",
+        "icm42670p.cpp",
+        "main.c",
+        "example_raw.h",
+        "example_raw.cpp",
+        "system_interface.h",
+        "system_interface.cpp",
+        "Message.h",
+        "Message.c",
+        "RingBuffer.h",
+        "ErrorHelper.h",
+        "ErrorHelper.c",
+        "InvError.h",
+        "InvExport.h",
+        "inv_imu_defs.h",
+        "inv_imu_extfunc.h",
+        "inv_imu_driver.c",
+        "inv_imu_driver.h",
+        "inv_imu_extfunc.h",
+        "inv_imu_regmap_rev_a.h",
+        "inv_imu_transport.c",
+        "inv_imu_transport.h",
+        "inv_imu_version.h",
         "README.md"
     ],
     "testFiles": [
@@ -14,6 +41,7 @@
         "main.ts",
         "test.ts"
     ],
+    "public": true,
     "targetVersions": {
         "target": "7.0.51",
         "targetId": "microbit"
@@ -21,5 +49,8 @@
     "supportedTargets": [
         "microbit"
     ],
-    "preferredEditor": "tsprj"
+    "preferredEditor": "tsprj",
+    "disablesVariants": [
+        "mbdal"
+    ]
 }
